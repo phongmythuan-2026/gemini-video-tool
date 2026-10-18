@@ -1,7 +1,6 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Công cụ tự động tạo kịch bản video bằng Gemini API (với cơ chế xoay vòng nhiều tài khoản/key)
-       kết hợp tạo giọng đọc tự động (Edge-TTS) và lưu vào thư mục output/.
+Mô tả: Hỗ trợ đọc danh sách tác vụ từ file kịch bản có sẵn trên repo hoặc nhập trực tiếp.
 """
 
 import os
@@ -26,13 +25,11 @@ class GeminiKeyPool:
         print(f"[INFO] Đang sử dụng Tài khoản / API Key thứ {self.current_index + 1}/{len(self.api_keys)}")
 
     def rotate_key(self):
-        """Chuyển sang key tiếp theo khi key hiện tại hết hạn mức."""
         self.current_index = (self.current_index + 1) % len(self.api_keys)
-        print(f"[WARNING] Key hiện tại đã chạm giới hạn (Quota). Đang chuyển sang Key thứ {self.current_index + 1}...")
+        print(f"[WARNING] Key hiện tại đã chạm giới hạn. Đang chuyển sang Key thứ {self.current_index + 1}...")
         self._init_client()
 
     def generate_content_with_fallback(self, prompt: str):
-        """Gọi API với cơ chế tự động chuyển key khi gặp lỗi quota."""
         total_keys = len(self.api_keys)
         checked_keys = 0
 
@@ -42,20 +39,16 @@ class GeminiKeyPool:
                 return response.text
             except Exception as e:
                 error_str = str(e).lower()
-                # Bắt các mã lỗi giới hạn hạn mức phổ biến từ Google API
                 if any(err in error_str for err in ["429", "quota", "resourceexhausted", "exhausted", "limit"]):
                     print(f"[WARN] Key {self.current_index + 1} gặp lỗi hạn mức: {e}")
                     self.rotate_key()
                     checked_keys += 1
                     time.sleep(3)
                 else:
-                    print(f"[ERROR] Lỗi phát sinh không do quota ở Key {self.current_index + 1}: {e}")
                     raise e
-        
-        raise Exception("[CRITICAL] Tất cả các tài khoản Google API trong Pool đều đã hết hạn mức!")
+        raise Exception("[CRITICAL] Tất cả các tài khoản Google API đều đã hết hạn mức!")
 
 async def generate_voiceover(text: str, output_audio_path: str):
-    """Sử dụng edge-tts để tạo file âm thanh tiếng Việt từ kịch bản."""
     import edge_tts
     voice = "vi-VN-HoaiMyNeural"
     communicate = edge_tts.Communicate(text, voice)
@@ -63,7 +56,6 @@ async def generate_voiceover(text: str, output_audio_path: str):
     print(f"[SUCCESS] Đã tạo file giọng đọc: {output_audio_path}")
 
 def main():
-    # 1. Lấy danh sách key từ biến môi trường GitHub Secrets
     keys_env = os.getenv("GEMINI_KEYS", "")
     api_keys = [k.strip() for k in keys_env.split(",") if k.strip()]
 
@@ -71,43 +63,57 @@ def main():
         print("[ERROR] Không tìm thấy biến môi trường GEMINI_KEYS!")
         return
 
-    # 2. Khởi tạo Pool quản lý key
     pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-2.5-flash")
 
-    # 3. Danh sách tác vụ tạo nội dung video tuần tự
-    tasks = [
-        "Viết kịch bản ngắn 30s TikTok: Bí quyết tối ưu hóa quy trình sản xuất tinh gọn.",
-        "Viết kịch bản ngắn 30s TikTok: 3 sai lầm phổ biến khi quản lý chuỗi cung ứng.",
-        "Viết kịch bản ngắn 30s TikTok: Ứng dụng tự động hóa bằng AI trong doanh nghiệp."
-    ]
+    # Lấy thông số từ môi trường GitHub Actions
+    input_filename = os.getenv("INPUT_FILENAME", "").strip()
+    input_topic = os.getenv("INPUT_TOPIC", "").strip()
 
-    # Tạo thư mục lưu kết quả đầu ra
+    tasks = []
+
+    # Ưu tiên 1: Đọc từ file kịch bản có sẵn trong thư mục inputs/ trên repo
+    if input_filename:
+        file_path = Path("inputs") / input_filename
+        if file_path.exists():
+            print(f"[INFO] Đang đọc danh sách tác vụ từ file: {file_path}")
+            lines = file_path.read_text(encoding="utf-8").splitlines()
+            tasks = [line.strip() for line in lines if line.strip()]
+        else:
+            print(f"[WARNING] Không tìm thấy file {file_path}. Chuyển sang kiểm tra chủ đề trực tiếp.")
+
+    # Ưu tiên 2: Nếu không có file hoặc file trống, lấy nội dung nhập trực tiếp
+    if not tasks and input_topic:
+        tasks = [input_topic]
+        print(f"[INFO] Nhận chủ đề trực tiếp từ giao diện: {input_topic}")
+
+    # Mặc định nếu không nhập gì cả
+    if not tasks:
+        tasks = ["Viết kịch bản ngắn 30s TikTok: Bí quyết tối ưu hóa quy trình sản xuất tinh gọn."]
+
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
 
     for idx, task in enumerate(tasks, 1):
         print(f"\n======================================")
-        print(f"Đang xử lý tác vụ {idx}/{len(tasks)}")
+        print(f"Đang xử lý tác vụ {idx}: {task}")
         print(f"======================================")
         try:
-            # Sinh kịch bản qua Gemini Pool
             script_text = pool.generate_content_with_fallback(task)
             
-            # Lưu kịch bản thành file text
-            script_path = output_dir / f"script_video_{idx}.txt"
+            timestamp = int(time.time())
+            script_path = output_dir / f"script_{idx}_{timestamp}.txt"
             script_path.write_text(script_text, encoding="utf-8")
             print(f"[SUCCESS] Đã lưu kịch bản vào: {script_path}")
             
-            # Tạo file audio giọng đọc tương ứng
-            audio_path = output_dir / f"voice_{idx}.mp3"
+            audio_path = output_dir / f"voice_{idx}_{timestamp}.mp3"
             asyncio.run(generate_voiceover(script_text, str(audio_path)))
             
             time.sleep(2)
         except Exception as e:
-            print(f"[FATAL] Tác vụ {idx} thất bại: {e}")
+            print(f"[FATAL] Tác vụ thất bại: {e}")
             break
 
-    print("\n[INFO] Hoàn thành toàn bộ quy trình sinh kịch bản và giọng đọc tự động!")
+    print("\n[INFO] Hoàn thành toàn bộ quy trình!")
 
 if __name__ == "__main__":
     main()
