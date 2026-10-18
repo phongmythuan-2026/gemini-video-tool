@@ -1,0 +1,12 @@
+name: Gemini Video Pipeline Online
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # Giúp hiện nút "Run workflow" thủ công trên giao diện GitHub Actions
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      # Các bước chạy pipeline của anh ở đây
