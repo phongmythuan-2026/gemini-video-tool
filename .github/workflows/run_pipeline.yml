@@ -1,15 +1,15 @@
 name: Run Gemini Video Pipeline Online
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Cho phép bấm nút chạy thủ công trên GitHub
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 2 * * *' # Tự động chạy định kỳ hàng ngày lúc 2:00 UTC
 
 jobs:
   run-python-script:
     runs-on: ubuntu-latest
     
-    # [QUAN TRỌNG] Cấp quyền ghi để script có thể git push code lên repo
+    # Cấp quyền ghi để GitHub Actions có thể push file lên repo
     permissions:
       contents: write
 
@@ -39,8 +39,10 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Thêm thư mục output vào git
           git add output/
+          
+          # Kiểm tra nếu có thay đổi (file mới sinh ra) thì thực hiện commit và push
           git status
-          # Kiểm tra xem có file mới hay không, nếu có thì tiến hành commit và push
-          git diff --staged --quiet || git commit -m "Auto-generate video scripts and assets [skip ci]"
-          git push
+          git diff --staged --quiet || (git commit -m "Auto-generate video scripts and audio assets [skip ci]" && git push)
