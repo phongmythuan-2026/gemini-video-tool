@@ -1,16 +1,14 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Công cụ tự động đọc kịch bản từ file Excel, gọi Gemini API (với cơ chế xoay vòng key)
-       kết hợp tạo giọng đọc tự động (Edge-TTS) và xử lý file trên GitHub Actions.
+Mô tả: Công cụ tự động tạo kịch bản video bằng Gemini API (với cơ chế xoay vòng nhiều tài khoản/key)
+       kết hợp tạo giọng đọc tự động (Edge-TTS) và lưu vào thư mục output/.
 """
 
 import os
 import time
 import asyncio
 from pathlib import Path
-import pandas as pd
 import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted
 
 class GeminiKeyPool:
     def __init__(self, api_keys: list[str], model_name: str = "gemini-2.5-flash"):
@@ -44,6 +42,7 @@ class GeminiKeyPool:
                 return response.text
             except Exception as e:
                 error_str = str(e).lower()
+                # Bắt các mã lỗi giới hạn hạn mức phổ biến từ Google API
                 if any(err in error_str for err in ["429", "quota", "resourceexhausted", "exhausted", "limit"]):
                     print(f"[WARN] Key {self.current_index + 1} gặp lỗi hạn mức: {e}")
                     self.rotate_key()
@@ -75,21 +74,12 @@ def main():
     # 2. Khởi tạo Pool quản lý key
     pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-2.5-flash")
 
-    # 3. Đọc kịch bản từ file Excel đã tải lên GitHub
-    excel_file = "kich_ban_nau_an_mien_tay_6ph.xlsx"
-    if not os.path.exists(excel_file):
-        print(f"[ERROR] Không tìm thấy file kịch bản: {excel_file}")
-        return
-
-    print(f"[INFO] Đang đọc file kịch bản Excel: {excel_file}")
-    df = pd.read_excel(excel_file)
-
-    # Giả định cột chứa yêu cầu/nội dung kịch bản trong file Excel tên là 'prompt' hoặc 'noidung'
-    # Anh có thể thay đổi tên cột 'prompt' bên dưới cho khớp với tiêu đề cột thực tế trong file Excel của mình
-    column_name = 'prompt' if 'prompt' in df.columns else df.columns[0]
-    tasks = df[column_name].dropna().tolist()
-
-    print(f"[INFO] Đã nạp thành công {len(tasks)} dòng kịch bản từ file Excel.")
+    # 3. Danh sách tác vụ tạo nội dung video tuần tự
+    tasks = [
+        "Viết kịch bản ngắn 30s TikTok: Bí quyết tối ưu hóa quy trình sản xuất tinh gọn.",
+        "Viết kịch bản ngắn 30s TikTok: 3 sai lầm phổ biến khi quản lý chuỗi cung ứng.",
+        "Viết kịch bản ngắn 30s TikTok: Ứng dụng tự động hóa bằng AI trong doanh nghiệp."
+    ]
 
     # Tạo thư mục lưu kết quả đầu ra
     output_dir = Path("output")
@@ -97,11 +87,11 @@ def main():
 
     for idx, task in enumerate(tasks, 1):
         print(f"\n======================================")
-        print(f"Đang xử lý tác vụ {idx}/{len(tasks)}: {task}")
+        print(f"Đang xử lý tác vụ {idx}/{len(tasks)}")
         print(f"======================================")
         try:
-            # Sinh nội dung tối ưu qua Gemini Pool
-            script_text = pool.generate_content_with_fallback(str(task))
+            # Sinh kịch bản qua Gemini Pool
+            script_text = pool.generate_content_with_fallback(task)
             
             # Lưu kịch bản thành file text
             script_path = output_dir / f"script_video_{idx}.txt"
@@ -117,7 +107,7 @@ def main():
             print(f"[FATAL] Tác vụ {idx} thất bại: {e}")
             break
 
-    print("\n[INFO] Hoàn thành toàn bộ quy trình đọc Excel, sinh kịch bản và giọng đọc tự động!")
+    print("\n[INFO] Hoàn thành toàn bộ quy trình sinh kịch bản và giọng đọc tự động!")
 
 if __name__ == "__main__":
     main()
