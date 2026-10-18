@@ -2,7 +2,7 @@ name: Gemini Video Pipeline Online
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "video_generator_tool" ]
   workflow_dispatch: # Giúp hiện nút "Run workflow" thủ công trên giao diện GitHub Actions
 
 jobs:
