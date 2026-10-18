@@ -1,15 +1,25 @@
 name: Run Gemini Video Pipeline Online
 
 on:
-  workflow_dispatch: # Cho phép bấm nút chạy thủ công trên GitHub
+  workflow_dispatch:
+    inputs:
+      script_filename:
+        description: 'Tên file kịch bản có sẵn trong repo (đặt trong thư mục inputs/):'
+        required: false
+        default: 'tasks.txt'
+        type: string
+      direct_topic:
+        description: 'Hoặc nhập trực tiếp chủ đề mới (nếu không dùng file):'
+        required: false
+        default: ''
+        type: string
   schedule:
-    - cron: '0 2 * * *' # Tự động chạy định kỳ hàng ngày lúc 2:00 UTC
+    - cron: '0 2 * * *'
 
 jobs:
   run-python-script:
     runs-on: ubuntu-latest
     
-    # Cấp quyền ghi để GitHub Actions có thể push file lên repo
     permissions:
       contents: write
 
@@ -32,6 +42,8 @@ jobs:
       - name: Run Video Generation Tool
         env:
           GEMINI_KEYS: ${{ secrets.GEMINI_KEYS }}
+          INPUT_FILENAME: ${{ github.event.inputs.script_filename }}
+          INPUT_TOPIC: ${{ github.event.inputs.direct_topic }}
         run: |
           python video_generator_tool.py
 
@@ -40,9 +52,6 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          # Thêm thư mục output vào git
           git add output/
-          
-          # Kiểm tra nếu có thay đổi (file mới sinh ra) thì thực hiện commit và push
           git status
           git diff --staged --quiet || (git commit -m "Auto-generate video scripts and audio assets [skip ci]" && git push)
