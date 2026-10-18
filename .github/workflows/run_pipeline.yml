@@ -8,5 +8,27 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    
     steps:
-      # Các bước chạy pipeline của anh ở đây
+      # 1. Tải mã nguồn từ repository về máy ảo GitHub Actions
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Cài đặt môi trường Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # 3. Cài đặt các thư viện phụ thuộc (nếu project có file requirements.txt)
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      # 4. Chạy script chính và truyền biến GEMINI_KEYS từ Secrets vào
+      - name: Run video generator pipeline
+        env:
+          GEMINI_KEYS: ${{ secrets.GEMINI_KEYS }}
+        run: |
+          python video_generator_tool.py
