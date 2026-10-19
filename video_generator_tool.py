@@ -1,11 +1,7 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Công cụ tự động hóa hoàn thiện:
-       - Sử dụng model chuẩn ổn định `gemini-2.0-flash`
-       - Cơ chế xoay vòng đa tài khoản Key Pool chống tràn Quota
-       - Hỗ trợ đọc danh sách kịch bản từ file Excel (.xlsx) hoặc Text (.txt)
-       - Xử lý đa phương thức (Text + Multi-images từ thư mục GitHub)
-       - Tùy chọn khung hình (9:16 / 16:9) với MoviePy & Edge-TTS
+Mô tả: Công cụ tự động hóa hoàn thiện, đã làm sạch ký tự ẩn, 
+       tích hợp cơ chế xoay vòng Key Pool, đọc Excel/Text, Edge-TTS và MoviePy.
 """
 
 import os
@@ -38,7 +34,7 @@ class GeminiKeyPool:
         self._init_client()
 
     def generate_content_with_fallback(self, contents):
-        """Gọi API với cơ chế tự động xoay vòng key khi gặp lỗi rate limit hoặc lỗi hệ thống."""
+        """Gọi API với cơ chế tự động xoay vòng key và dự phòng model khi gặp lỗi."""
         total_keys = len(self.api_keys)
         checked_keys = 0
 
@@ -51,8 +47,13 @@ class GeminiKeyPool:
                 return response.text
             except Exception as e:
                 print(f"[WARN] Key {self.current_index + 1} gặp lỗi: {e}")
-                self.rotate_key()
-                checked_keys += 1
+                # Nếu lỗi do model không tồn tại, thử đổi sang model dự phòng gemini-1.5-flash
+                if "404" in str(e) and self.model_name != "gemini-1.5-flash":
+                    print(f"[INFO] Chuyển đổi model dự phòng sang gemini-1.5-flash...")
+                    self.model_name = "gemini-1.5-flash"
+                else:
+                    self.rotate_key()
+                    checked_keys += 1
                 time.sleep(3)
         
         raise Exception("[CRITICAL] Tất cả các tài khoản Google API trong Pool đều đã gặp lỗi!")
