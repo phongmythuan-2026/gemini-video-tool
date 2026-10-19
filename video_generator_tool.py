@@ -1,7 +1,6 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Công cụ tự động hóa hoàn thiện, đã làm sạch ký tự ẩn, 
-       tích hợp cơ chế xoay vòng Key Pool, đọc Excel/Text, Edge-TTS và MoviePy.
+Mô tả: Sử dụng model chuẩn mới nhất `gemini-3.8-flash`, xoay vòng Key Pool, đọc Excel/Text, Edge-TTS và MoviePy.
 """
 
 import os
@@ -15,7 +14,7 @@ from moviepy.video.VideoClip import ColorClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 
 class GeminiKeyPool:
-    def __init__(self, api_keys: list[str], model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_keys: list[str], model_name: str = "gemini-3.8-flash"):
         if not api_keys:
             raise ValueError("Danh sách API Key không được để trống!")
         self.api_keys = api_keys
@@ -34,7 +33,7 @@ class GeminiKeyPool:
         self._init_client()
 
     def generate_content_with_fallback(self, contents):
-        """Gọi API với cơ chế tự động xoay vòng key và dự phòng model khi gặp lỗi."""
+        """Gọi API với cơ chế tự động xoay vòng key khi gặp lỗi."""
         total_keys = len(self.api_keys)
         checked_keys = 0
 
@@ -47,13 +46,8 @@ class GeminiKeyPool:
                 return response.text
             except Exception as e:
                 print(f"[WARN] Key {self.current_index + 1} gặp lỗi: {e}")
-                # Nếu lỗi do model không tồn tại, thử đổi sang model dự phòng gemini-1.5-flash
-                if "404" in str(e) and self.model_name != "gemini-1.5-flash":
-                    print(f"[INFO] Chuyển đổi model dự phòng sang gemini-1.5-flash...")
-                    self.model_name = "gemini-1.5-flash"
-                else:
-                    self.rotate_key()
-                    checked_keys += 1
+                self.rotate_key()
+                checked_keys += 1
                 time.sleep(3)
         
         raise Exception("[CRITICAL] Tất cả các tài khoản Google API trong Pool đều đã gặp lỗi!")
@@ -98,7 +92,6 @@ def render_video_with_audio(audio_path: str, output_video_path: str, aspect_rati
         raise e
 
 def main():
-    # Lấy danh sách key từ biến môi trường GitHub Secrets
     keys_env = os.getenv("GEMINI_KEYS", "")
     api_keys = [k.strip() for k in keys_env.split(",") if k.strip()]
 
@@ -106,16 +99,14 @@ def main():
         print("[ERROR] Không tìm thấy biến môi trường GEMINI_KEYS!")
         return
 
-    # Khởi tạo Pool quản lý key với model chuẩn gemini-2.0-flash
-    pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-2.0-flash")
+    # Khởi tạo Pool quản lý key với model mới nhất gemini-3.8-flash
+    pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-3.8-flash")
 
-    # Đọc tham số từ giao diện GitHub Actions
     input_filename = os.getenv("INPUT_FILENAME", "").strip()
     input_topic = os.getenv("INPUT_TOPIC", "").strip()
     aspect_ratio = os.getenv("ASPECT_RATIO", "9:16").strip()
     images_folder = os.getenv("IMAGES_FOLDER", "").strip()
 
-    # 1. Tải danh sách hình ảnh đa phương thức (nếu có thư mục ảnh)
     pil_images = []
     if images_folder:
         folder_path = Path("inputs") / images_folder
@@ -131,18 +122,16 @@ def main():
                     except Exception as ex:
                         print(f"[WARNING] Không thể mở file ảnh {img_file.name}: {ex}")
 
-    # 2. Đọc danh sách tác vụ từ file (.xlsx hoặc .txt) hoặc chủ đề trực tiếp
     tasks = []
     if input_filename:
         file_path = Path("inputs") / input_filename
         if not file_path.exists():
-            file_path = Path(input_filename) # Kiểm tra ở thư mục gốc
+            file_path = Path(input_filename)
 
         if file_path.exists():
             print(f"[INFO] Đang đọc file dữ liệu: {file_path}")
             if file_path.suffix.lower() == ".xlsx":
                 df = pd.read_excel(file_path)
-                # Đọc toàn bộ dữ liệu từ cột đầu tiên của file Excel
                 tasks = df.iloc[:, 0].dropna().astype(str).tolist()
             else:
                 lines = file_path.read_text(encoding="utf-8").splitlines()
@@ -164,10 +153,7 @@ def main():
         print(f"Đang xử lý tác vụ {idx}: {task} (Khung hình: {aspect_ratio})")
         print(f"======================================")
         try:
-            # Đóng gói dữ liệu đa phương thức chuẩn SDK mới [Prompt, Ảnh 1, Ảnh 2, ...]
             gemini_payload = [task] + pil_images if pil_images else task
-
-            # Sinh kịch bản thông qua Gemini Pool
             script_text = pool.generate_content_with_fallback(gemini_payload)
             
             timestamp = int(time.time())
@@ -175,11 +161,9 @@ def main():
             script_path.write_text(script_text, encoding="utf-8")
             print(f"[SUCCESS] Đã lưu kịch bản vào: {script_path}")
             
-            # Tạo file âm thanh giọng đọc MP3
             audio_path = output_dir / f"voice_{idx}_{timestamp}.mp3"
             asyncio.run(generate_voiceover(script_text, str(audio_path)))
             
-            # Render video hoàn chỉnh theo tỷ lệ khung hình
             video_path = output_dir / f"video_{idx}_{timestamp}.mp4"
             render_video_with_audio(str(audio_path), str(video_path), aspect_ratio)
             
