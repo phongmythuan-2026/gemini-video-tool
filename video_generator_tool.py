@@ -1,8 +1,8 @@
 """
 Tên file: video_generator_tool.py
 Mô tả: Công cụ tự động hóa chuẩn SDK `google-genai` mới nhất,
-       tự động quét và sử dụng model khả dụng từ API Key, xoay vòng Key Pool,
-       đọc file Excel/Text, Edge-TTS và MoviePy.
+       đọc thông minh file Excel kịch bản chi tiết (lấy cột Lời thoại & Nội dung),
+       tự động quét model, xoay vòng Key Pool, Edge-TTS và MoviePy.
 """
 
 import os
@@ -35,14 +35,12 @@ class GeminiKeyPool:
             pager = self.client.models.list()
             for m in pager:
                 name = m.name.replace("models/", "")
-                # Ưu tiên tìm các model flash hỗ trợ tạo nội dung (generateContent)
                 if "flash" in name.lower():
                     print(f"[INFO] Tự động phát hiện model khả dụng: {name}")
                     return name
         except Exception as e:
             print(f"[WARNING] Không thể quét danh sách model: {e}")
         
-        # Fallback an toàn tuyệt đối
         return "gemini-2.0-flash"
 
     def rotate_key(self):
@@ -136,6 +134,7 @@ def main():
                     except Exception as ex:
                         print(f"[WARNING] Không thể mở file ảnh {img_file.name}: {ex}")
 
+    # Đọc file Excel kịch bản chi tiết thông minh
     tasks = []
     if input_filename:
         file_path = Path("inputs") / input_filename
@@ -143,13 +142,27 @@ def main():
             file_path = Path(input_filename)
 
         if file_path.exists():
-            print(f"[INFO] Đang đọc file dữ liệu: {file_path}")
+            print(f"[INFO] Đang đọc file kịch bản Excel: {file_path}")
             if file_path.suffix.lower() == ".xlsx":
                 df = pd.read_excel(file_path)
-                tasks = df.iloc[:, 0].dropna().astype(str).tolist()
+                # Kiểm tra xem file có cột "Lời thoại (Giọng miền Tây)" hay không
+                target_col = None
+                for col in df.columns:
+                    if "lời thoại" in str(col).lower() or "nội dung" in str(col).lower():
+                        target_col = col
+                        break
+                
+                if target_col is not None:
+                    # Gộp toàn bộ các dòng lời thoại trong file Excel thành một kịch bản hoàn chỉnh liên tục
+                    script_lines = df[target_col].dropna().astype(str).tolist()
+                    combined_script = " ".join(script_lines)
+                    tasks = [f"Dựa trên kịch bản chi tiết sau, hãy biên tập lại thành lời dẫn video hoàn chỉnh, lôi cuốn: {combined_script}"]
+                else:
+                    # Fallback lấy cột thứ 2 hoặc cột bất kỳ nếu không tìm thấy tên cột
+                    tasks = df.iloc[:, 1].dropna().astype(str).tolist()
             else:
                 lines = file_path.read_text(encoding="utf-8").splitlines()
-                tasks = [line.strip() for line in lines if line.strip()]
+                tasks = [line.strip() for line in lines if len(line.strip()) > 3]
         else:
             print(f"[WARNING] Không tìm thấy file {input_filename}")
 
@@ -157,14 +170,14 @@ def main():
         tasks = [input_topic]
 
     if not tasks:
-        tasks = ["Viết kịch bản ngắn nấu ăn miền Tây."]
+        tasks = ["Viết kịch bản video ngắn nấu ăn miền Tây."]
 
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
 
     for idx, task in enumerate(tasks, 1):
         print(f"\n======================================")
-        print(f"Đang xử lý tác vụ {idx}: {task} (Khung hình: {aspect_ratio})")
+        print(f"Đang xử lý tác vụ {idx} (Khung hình: {aspect_ratio})")
         print(f"======================================")
         try:
             gemini_payload = [task] + pil_images if pil_images else task
