@@ -1,7 +1,7 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Hỗ trợ đọc danh sách kịch bản linh hoạt từ file Text hoặc file Excel (.xlsx),
-       tự động quét model Gemini mới nhất, xoay vòng Key Pool, xử lý Multi-images và Render Video.
+Mô tả: Công cụ tự động hóa hoàn thiện với cơ chế Tự động dò tìm Model khả dụng của Key,
+       Xoay vòng Key Pool, xử lý Excel/Text, Multi-images, Edge-TTS và MoviePy.
 """
 
 import os
@@ -14,18 +14,27 @@ from PIL import Image
 from moviepy.video.VideoClip import ColorClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 
-def get_best_available_model(client) -> str:
-    """Tự động quét danh sách model từ API và chọn model Flash khả dụng."""
+def get_auto_detected_model(client) -> str:
+    """Tự động quét danh sách model được phép sử dụng từ API key hiện tại để chọn model Flash tối ưu."""
     try:
         models = client.models.list()
+        available_models = []
         for m in models:
-            model_name = m.name.replace("models/", "")
-            if "flash" in model_name.lower():
-                print(f"[INFO] Tự động chọn model khả dụng: {model_name}")
-                return model_name
+            name = m.name.replace("models/", "")
+            # Ưu tiên tìm các dòng model flash hỗ trợ sinh nội dung
+            if "flash" in name.lower():
+                available_models.append(name)
+        
+        if available_models:
+            # Lấy model flash đầu tiên hoặc mới nhất tìm được
+            selected = available_models[0]
+            print(f"[INFO] Tự động phát hiện model hợp lệ cho API key này: {selected}")
+            return selected
     except Exception as e:
-        print(f"[WARNING] Không thể quét danh sách model: {e}")
-    return "gemini-2.5-flash"
+        print(f"[WARNING] Không thể tự động quét model từ API: {e}")
+    
+    # Dự phòng an toàn nếu không quét được
+    return "gemini-1.5-flash"
 
 class GeminiKeyPool:
     def __init__(self, api_keys: list[str]):
@@ -38,12 +47,13 @@ class GeminiKeyPool:
     def _init_client(self):
         current_key = self.api_keys[self.current_index]
         self.client = genai.Client(api_key=current_key)
-        self.model_name = get_best_available_model(self.client)
+        # Tự động dò tìm model chạy mượt nhất cho key này
+        self.model_name = get_auto_detected_model(self.client)
         print(f"[INFO] Đang sử dụng Tài khoản / API Key thứ {self.current_index + 1}/{len(self.api_keys)} với model: {self.model_name}")
 
     def rotate_key(self):
         self.current_index = (self.current_index + 1) % len(self.api_keys)
-        print(f"[WARNING] Key hiện tại gặp lỗi/chạm giới hạn. Đang chuyển sang Key thứ {self.current_index + 1}...")
+        print(f"[WARNING] Key hiện tại gặp lỗi. Đang chuyển sang Key thứ {self.current_index + 1}...")
         self._init_client()
 
     def generate_content_with_fallback(self, contents):
@@ -110,6 +120,7 @@ def main():
         print("[ERROR] Không tìm thấy biến môi trường GEMINI_KEYS!")
         return
 
+    # Khởi tạo Pool quản lý key tự động dò tìm model
     pool = GeminiKeyPool(api_keys=api_keys)
 
     input_filename = os.getenv("INPUT_FILENAME", "").strip()
@@ -133,33 +144,29 @@ def main():
                     except Exception as ex:
                         print(f"[WARNING] Không thể mở file ảnh {img_file.name}: {ex}")
 
-    # 2. Đọc danh sách tác vụ từ file (Hỗ trợ cả .txt và .xlsx)
+    # 2. Đọc danh sách tác vụ từ file (.xlsx hoặc .txt)
     tasks = []
     if input_filename:
-        # Kiểm tra xem file ở thư mục inputs/ hay ở thư mục gốc
         file_path = Path("inputs") / input_filename
         if not file_path.exists():
-            file_path = Path(input_filename) # Tìm ở thư mục gốc
+            file_path = Path(input_filename)
 
         if file_path.exists():
             print(f"[INFO] Đang đọc file dữ liệu: {file_path}")
             if file_path.suffix.lower() == ".xlsx":
-                # Đọc file Excel (lấy dữ liệu từ cột đầu tiên hoặc cột chứa kịch bản)
                 df = pd.read_excel(file_path)
-                # Lấy tất cả các dòng ở cột đầu tiên bỏ qua ô trống
                 tasks = df.iloc[:, 0].dropna().astype(str).tolist()
             else:
-                # Đọc file text thông thường
                 lines = file_path.read_text(encoding="utf-8").splitlines()
                 tasks = [line.strip() for line in lines if line.strip()]
         else:
-            print(f"[WARNING] Không tìm thấy file {input_filename} ở cả thư mục inputs/ lẫn thư mục gốc.")
+            print(f"[WARNING] Không tìm thấy file {input_filename}")
 
     if not tasks and input_topic:
         tasks = [input_topic]
 
     if not tasks:
-        tasks = ["Viết kịch bản ngắn nấu ăn miền Tây dựa trên dữ liệu Excel."]
+        tasks = ["Viết kịch bản ngắn nấu ăn miền Tây."]
 
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
@@ -188,7 +195,7 @@ def main():
             print(f"[FATAL] Tác vụ thất bại: {e}")
             break
 
-    print("\n[INFO] Hoàn thành toàn bộ quy trình đọc Excel và tạo video tự động!")
+    print("\n[INFO] Hoàn thành toàn bộ quy trình tự động hóa thành công!")
 
 if __name__ == "__main__":
     main()
