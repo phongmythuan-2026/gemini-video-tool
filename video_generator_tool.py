@@ -1,6 +1,6 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Công cụ tích hợp đa phương thức (Gemini API + Multi-images) + Tùy chọn khung hình (9:16 / 16:9) + MoviePy Render.
+Mô tả: Công cụ tích hợp đa phương thức (Gemini API + Multi-images) + Tùy chọn khung hình (9:16 / 16:9) + MoviePy ổn định.
 """
 
 import os
@@ -9,7 +9,8 @@ import asyncio
 from pathlib import Path
 import google.generativeai as genai
 from PIL import Image
-from moviepy.editor import ColorClip, AudioFileClip
+from moviepy.video.VideoClip import ColorClip
+from moviepy.audio.io.AudioFileClip import AudioFileClip
 
 class GeminiKeyPool:
     def __init__(self, api_keys: list[str], model_name: str = "gemini-2.5-flash"):
@@ -59,7 +60,7 @@ async def generate_voiceover(text: str, output_audio_path: str):
     print(f"[SUCCESS] Đã tạo file giọng đọc: {output_audio_path}")
 
 def render_video_with_audio(audio_path: str, output_video_path: str, aspect_ratio: str):
-    """Render video với khung hình tùy chọn 9:16 hoặc 16:9."""
+    """Render video với khung hình tùy chọn 9:16 hoặc 16:9 sử dụng MoviePy chuẩn."""
     print(f"[INFO] Bắt đầu render video với tỷ lệ {aspect_ratio}...")
     try:
         audio_clip = AudioFileClip(audio_path)
@@ -100,13 +101,12 @@ def main():
 
     pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-2.5-flash")
 
-    # Đọc tham số từ GitHub Actions
     input_filename = os.getenv("INPUT_FILENAME", "").strip()
     input_topic = os.getenv("INPUT_TOPIC", "").strip()
     aspect_ratio = os.getenv("ASPECT_RATIO", "9:16").strip()
     images_folder = os.getenv("IMAGES_FOLDER", "").strip()
 
-    # 1. Tải danh sách hình ảnh đa phương thức (nếu có người dùng upload vào thư mục)
+    # 1. Tải danh sách hình ảnh đa phương thức (nếu có)
     pil_images = []
     if images_folder:
         folder_path = Path("inputs") / images_folder
@@ -144,10 +144,7 @@ def main():
         print(f"Đang xử lý tác vụ {idx}: {task} (Khung hình: {aspect_ratio})")
         print(f"======================================")
         try:
-            # Chuẩn bị nội dung gửi cho Gemini (Kết hợp Text prompt + danh sách ảnh nếu có)
             gemini_payload = [task] + pil_images if pil_images else task
-
-            # Sinh kịch bản đa phương thức qua Gemini Pool
             script_text = pool.generate_content_with_fallback(gemini_payload)
             
             timestamp = int(time.time())
@@ -155,11 +152,9 @@ def main():
             script_path.write_text(script_text, encoding="utf-8")
             print(f"[SUCCESS] Đã lưu kịch bản vào: {script_path}")
             
-            # Tạo giọng đọc MP3
             audio_path = output_dir / f"voice_{idx}_{timestamp}.mp3"
             asyncio.run(generate_voiceover(script_text, str(audio_path)))
             
-            # Render video theo khung hình được chọn
             video_path = output_dir / f"video_{idx}_{timestamp}.mp4"
             render_video_with_audio(str(audio_path), str(video_path), aspect_ratio)
             
