@@ -1,4 +1,4 @@
-google-genai>=1.0.0
+fal-client
 edge-tts>=6.1.9
 pandas
 openpyxl
