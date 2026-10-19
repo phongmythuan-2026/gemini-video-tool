@@ -1,8 +1,8 @@
 """
 Tên file: video_generator_tool.py
 Mô tả: Công cụ tự động hóa chuẩn SDK `google-genai` mới nhất,
-       đọc thông minh file Excel kịch bản chi tiết (lấy cột Lời thoại & Nội dung),
-       tự động quét model, xoay vòng Key Pool, Edge-TTS và MoviePy.
+       cố định sử dụng model chuẩn `gemini-2.0-flash`, đọc file Excel kịch bản chi tiết, 
+       xoay vòng Key Pool, Edge-TTS và MoviePy.
 """
 
 import os
@@ -16,32 +16,18 @@ from moviepy.video.VideoClip import ColorClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 
 class GeminiKeyPool:
-    def __init__(self, api_keys: list[str]):
+    def __init__(self, api_keys: list[str], model_name: str = "gemini-2.0-flash"):
         if not api_keys:
             raise ValueError("Danh sách API Key không được để trống!")
         self.api_keys = api_keys
         self.current_index = 0
+        self.model_name = model_name
         self._init_client()
 
     def _init_client(self):
         current_key = self.api_keys[self.current_index]
         self.client = genai.Client(api_key=current_key)
-        self.model_name = self._detect_model()
         print(f"[INFO] Đang sử dụng Tài khoản / API Key thứ {self.current_index + 1}/{len(self.api_keys)} với model: {self.model_name}")
-
-    def _detect_model(self) -> str:
-        """Tự động quét danh sách các model được phép sử dụng từ chính API Key hiện tại."""
-        try:
-            pager = self.client.models.list()
-            for m in pager:
-                name = m.name.replace("models/", "")
-                if "flash" in name.lower():
-                    print(f"[INFO] Tự động phát hiện model khả dụng: {name}")
-                    return name
-        except Exception as e:
-            print(f"[WARNING] Không thể quét danh sách model: {e}")
-        
-        return "gemini-2.0-flash"
 
     def rotate_key(self):
         self.current_index = (self.current_index + 1) % len(self.api_keys)
@@ -61,8 +47,13 @@ class GeminiKeyPool:
                 return response.text
             except Exception as e:
                 print(f"[WARN] Key {self.current_index + 1} gặp lỗi: {e}")
-                self.rotate_key()
-                checked_keys += 1
+                # Nếu model 2.0 lỗi 404, thử tự động chuyển sang gemini-1.5-flash ngay lập tức
+                if "404" in str(e) and self.model_name == "gemini-2.0-flash":
+                    print(f"[INFO] Tự động chuyển đổi sang model dự phòng gemini-1.5-flash...")
+                    self.model_name = "gemini-1.5-flash"
+                else:
+                    self.rotate_key()
+                    checked_keys += 1
                 time.sleep(3)
         
         raise Exception("[CRITICAL] Tất cả các tài khoản Google API trong Pool đều đã gặp lỗi!")
@@ -112,7 +103,8 @@ def main():
         print("[ERROR] Không tìm thấy biến môi trường GEMINI_KEYS!")
         return
 
-    pool = GeminiKeyPool(api_keys=api_keys)
+    # Khởi tạo Pool với model chuẩn gemini-2.0-flash
+    pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-2.0-flash")
 
     input_filename = os.getenv("INPUT_FILENAME", "").strip()
     input_topic = os.getenv("INPUT_TOPIC", "").strip()
@@ -145,7 +137,6 @@ def main():
             print(f"[INFO] Đang đọc file kịch bản Excel: {file_path}")
             if file_path.suffix.lower() == ".xlsx":
                 df = pd.read_excel(file_path)
-                # Kiểm tra xem file có cột "Lời thoại (Giọng miền Tây)" hay không
                 target_col = None
                 for col in df.columns:
                     if "lời thoại" in str(col).lower() or "nội dung" in str(col).lower():
@@ -153,12 +144,10 @@ def main():
                         break
                 
                 if target_col is not None:
-                    # Gộp toàn bộ các dòng lời thoại trong file Excel thành một kịch bản hoàn chỉnh liên tục
                     script_lines = df[target_col].dropna().astype(str).tolist()
                     combined_script = " ".join(script_lines)
                     tasks = [f"Dựa trên kịch bản chi tiết sau, hãy biên tập lại thành lời dẫn video hoàn chỉnh, lôi cuốn: {combined_script}"]
                 else:
-                    # Fallback lấy cột thứ 2 hoặc cột bất kỳ nếu không tìm thấy tên cột
                     tasks = df.iloc[:, 1].dropna().astype(str).tolist()
             else:
                 lines = file_path.read_text(encoding="utf-8").splitlines()
