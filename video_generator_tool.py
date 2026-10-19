@@ -1,9 +1,10 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Công cụ render video AI thực sự bằng Google GenAI Video Generation.
-       - Đọc trực tiếp kịch bản và Prompt (hình ảnh/bối cảnh) từ file Excel.
-       - Render video có hình ảnh động AI (chứ không phải khung đen).
-       - Sinh giọng đọc lồng vào video.
+Mô tả: Tự động hóa render Video AI chân thực bằng Fal.ai API trên GitHub Actions:
+       - Đọc kịch bản Excel (Prompt AI & Lời thoại).
+       - Gọi Fal.ai (Mô hình HunyuanVideo / LTX-Video) render video chuyển động AI 5 giây.
+       - Tạo giọng đọc lồng tiếng bằng Edge-TTS.
+       - Ghép Video AI + Audio lại thành file MP4 hoàn chỉnh.
 """
 
 import os
@@ -11,79 +12,42 @@ import time
 import asyncio
 from pathlib import Path
 import pandas as pd
-from google import genai
-from google.genai import types
-from PIL import Image
+import requests
+import fal_client
 from moviepy.video.io.VideoFileClip import VideoFileClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 
-class GeminiVideoAI:
-    def __init__(self, api_keys: list[str]):
-        if not api_keys:
-            raise ValueError("Danh sách API Key không được để trống!")
-        self.api_keys = api_keys
-        self.current_index = 0
-        self._init_client()
-
-    def _init_client(self):
-        current_key = self.api_keys[self.current_index]
-        self.client = genai.Client(api_key=current_key)
-        # Sử dụng model sinh video của Google (Veo 2.0 hoặc model video tương đương)
-        self.video_model_name = "veo-2.0-generate-video-001" 
-        print(f"[INFO] Đang sử dụng Tài khoản / API Key thứ {self.current_index + 1}/{len(self.api_keys)}")
-
-    def rotate_key(self):
-        self.current_index = (self.current_index + 1) % len(self.api_keys)
-        print(f"[WARNING] Đang chuyển sang Key thứ {self.current_index + 1}...")
-        self._init_client()
-
-    def generate_video(self, prompt_text: str, aspect_ratio: str, output_path: str):
-        """Gọi API Google để generate video AI thực sự từ Text Prompt."""
-        print(f"[INFO] Bắt đầu render AI Video từ Google với Prompt: '{prompt_text[:50]}...'")
-        total_keys = len(self.api_keys)
-        checked_keys = 0
-
-        # Chuyển đổi định dạng khung hình theo chuẩn API (16:9 hoặc 9:16)
-        ratio_api = "16:9" if aspect_ratio == "16:9" else "9:16"
-
-        while checked_keys < total_keys:
-            try:
-                # Gọi API sinh video trực tiếp của Gemini/Veo
-                operation = self.client.models.generate_videos(
-                    model=self.video_model_name,
-                    prompt=prompt_text,
-                    config=types.GenerateVideosConfig(
-                        aspect_ratio=ratio_api,
-                        person_generation="ALLOW_ADULT"
-                    )
-                )
-                
-                print("[INFO] Đang chờ Google render video (có thể mất 1-3 phút)...")
-                # Chờ cho đến khi render xong trên server
-                while not operation.done:
-                    time.sleep(10)
-                    operation.reload()
-
-                if operation.error:
-                    raise Exception(f"Lỗi API: {operation.error.message}")
-                
-                # Tải video mp4 về máy
-                video_bytes = operation.response.generated_videos[0].video.video_bytes
-                with open(output_path, "wb") as f:
-                    f.write(video_bytes)
-                print(f"[SUCCESS] Đã tải AI Video về máy thành công: {output_path}")
-                return True
-
-            except Exception as e:
-                print(f"[WARN] Key {self.current_index + 1} gặp lỗi render video: {e}")
-                self.rotate_key()
-                checked_keys += 1
-                time.sleep(3)
+def render_fal_video(prompt_text: str, aspect_ratio: str, output_video_path: str) -> bool:
+    """Gọi Fal.ai API để render ra file video AI chuyển động thực sự (.mp4)."""
+    print(f"[INFO] Gửi Prompt sang Fal.ai: '{prompt_text[:60]}...'")
+    try:
+        ratio = "9:16" if aspect_ratio == "9:16" else "16:9"
         
-        raise Exception("[CRITICAL] Không thể render video, tất cả API Key đều báo lỗi!")
+        # Gọi mô hình sinh Video AI sắc nét HunyuanVideo trên Fal.ai
+        result = fal_client.subscribe(
+            "fal-ai/hunyuan-video",
+            arguments={
+                "prompt": prompt_text,
+                "aspect_ratio": ratio,
+                "num_frames": 129  # Khung thời lượng ~5 giây chuẩn
+            }
+        )
+        
+        video_url = result['video']['url']
+        print(f"[INFO] Đã nhận được link video từ Fal.ai. Đang tải về...")
+        
+        response = requests.get(video_url)
+        with open(output_video_path, "wb") as f:
+            f.write(response.content)
+            
+        print(f"[SUCCESS] Đã tải thành công Video AI: {output_video_path}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Lỗi render video từ Fal.ai: {e}")
+        return False
 
 async def generate_voiceover(text: str, output_audio_path: str):
-    """Sử dụng edge-tts để tạo file giọng đọc."""
+    """Sử dụng edge-tts tạo giọng đọc tiếng Việt."""
     import edge_tts
     voice = "vi-VN-HoaiMyNeural"
     communicate = edge_tts.Communicate(text, voice)
@@ -91,14 +55,16 @@ async def generate_voiceover(text: str, output_audio_path: str):
     print(f"[SUCCESS] Đã tạo file giọng đọc: {output_audio_path}")
 
 def merge_video_audio(video_path: str, audio_path: str, final_output_path: str):
-    """Ghép video AI vừa sinh ra với giọng đọc."""
-    print(f"[INFO] Bắt đầu ghép Video AI với Giọng đọc...")
+    """Ghép Video AI vừa render với Giọng đọc MP3."""
+    print(f"[INFO] Đang ghép Video AI với giọng đọc...")
     try:
         video_clip = VideoFileClip(video_path)
         audio_clip = AudioFileClip(audio_path)
         
-        # Gán âm thanh vào video (Cắt bằng chiều dài của video hoặc audio tùy ý)
-        final_clip = video_clip.set_audio(audio_clip)
+        try:
+            final_clip = video_clip.with_audio(audio_clip)
+        except AttributeError:
+            final_clip = video_clip.set_audio(audio_clip)
 
         final_clip.write_videofile(
             final_output_path,
@@ -112,80 +78,66 @@ def merge_video_audio(video_path: str, audio_path: str, final_output_path: str):
         audio_clip.close()
         video_clip.close()
         final_clip.close()
-        print(f"[SUCCESS] Đã xuất video hoàn chỉnh cuối cùng: {final_output_path}")
+        print(f"[SUCCESS] ĐÃ XUẤT VIDEO HOÀN CHỈNH: {final_output_path}")
     except Exception as e:
-        print(f"[ERROR] Lỗi khi ghép video và audio: {e}")
+        print(f"[ERROR] Lỗi ghép audio/video: {e}")
 
 def main():
-    keys_env = os.getenv("GEMINI_KEYS", "")
-    api_keys = [k.strip() for k in keys_env.split(",") if k.strip()]
-
-    if not api_keys:
-        print("[ERROR] Không tìm thấy biến môi trường GEMINI_KEYS!")
+    fal_key = os.getenv("FAL_KEY", "").strip()
+    if not fal_key:
+        print("[ERROR] Không tìm thấy FAL_KEY trong môi trường/GitHub Secrets!")
         return
 
-    ai_engine = GeminiVideoAI(api_keys=api_keys)
+    os.environ["FAL_KEY"] = fal_key
 
-    input_filename = os.getenv("INPUT_FILENAME", "").strip()
+    input_filename = os.getenv("INPUT_FILENAME", "kich_ban_nau_an_mien_tay_6ph.xlsx").strip()
     aspect_ratio = os.getenv("ASPECT_RATIO", "9:16").strip()
 
-    tasks = []
-    if input_filename:
-        file_path = Path("inputs") / input_filename
-        if not file_path.exists():
-            file_path = Path(input_filename)
+    file_path = Path("inputs") / input_filename
+    if not file_path.exists():
+        file_path = Path(input_filename)
 
-        if file_path.exists() and file_path.suffix.lower() == ".xlsx":
-            print(f"[INFO] Đang đọc file Excel kịch bản AI: {file_path}")
-            df = pd.read_excel(file_path)
-            
-            # Lặp qua từng dòng của file Excel
-            for index, row in df.iterrows():
-                # Lấy nội dung từ cột "Prompt gợi ý (AI)" để làm hình ảnh video
-                prompt_col = [col for col in df.columns if "prompt" in str(col).lower()]
-                voice_col = [col for col in df.columns if "lời thoại" in str(col).lower() or "giọng" in str(col).lower()]
-                
-                if prompt_col and voice_col:
-                    video_prompt = str(row[prompt_col[0]]).strip()
-                    voice_text = str(row[voice_col[0]]).strip()
-                    
-                    if video_prompt and video_prompt != "nan" and voice_text and voice_text != "nan":
-                        tasks.append({"prompt": video_prompt, "voice": voice_text})
-        else:
-            print(f"[WARNING] Không tìm thấy file Excel {input_filename}")
+    if not file_path.exists():
+        print(f"[ERROR] Không tìm thấy file kịch bản: {input_filename}")
+        return
 
-    if not tasks:
-        print("[INFO] Không có tác vụ hợp lệ, đang chạy tác vụ mặc định...")
-        tasks = [{"prompt": "A beautiful Vietnamese woman in traditional Ao Dai walking in a green rice field, cinematic lighting.", "voice": "Xin chào các bạn, hôm nay mình đi thăm đồng lúa quê mình."}]
+    print(f"[INFO] Đang đọc file Excel kịch bản: {file_path}")
+    df = pd.read_excel(file_path)
+
+    prompt_col = [col for col in df.columns if "prompt" in str(col).lower()]
+    voice_col = [col for col in df.columns if "lời thoại" in str(col).lower() or "giọng" in str(col).lower()]
+
+    if not prompt_col or not voice_col:
+        print("[ERROR] File Excel cần chứa cột 'Prompt gợi ý (AI)' và 'Lời thoại (Giọng miền Tây)'")
+        return
 
     output_dir = Path("output")
     output_dir.mkdir(exist_ok=True)
 
-    for idx, task in enumerate(tasks, 1):
-        print(f"\n======================================")
-        print(f"Đang render Cảnh {idx} (Khung hình: {aspect_ratio})")
-        print(f"======================================")
-        try:
+    for idx, row in df.iterrows():
+        prompt = str(row[prompt_col[0]]).strip()
+        voice = str(row[voice_col[0]]).strip()
+
+        if prompt and prompt != "nan" and voice and voice != "nan":
+            print(f"\n======================================")
+            print(f"Đang xử lý Phân đoạn {idx + 1}")
+            print(f"======================================")
             timestamp = int(time.time())
             
-            # 1. Render Video AI không lời (Dùng Prompt)
-            raw_video_path = str(output_dir / f"raw_video_{idx}_{timestamp}.mp4")
-            ai_engine.generate_video(prompt_text=task["prompt"], aspect_ratio=aspect_ratio, output_path=raw_video_path)
+            # 1. Render Video AI chuyển động từ Fal.ai
+            raw_video_path = str(output_dir / f"raw_video_scene_{idx + 1}_{timestamp}.mp4")
+            render_success = render_fal_video(prompt, aspect_ratio, raw_video_path)
             
-            # 2. Tạo giọng đọc AI
-            audio_path = str(output_dir / f"voice_{idx}_{timestamp}.mp3")
-            asyncio.run(generate_voiceover(task["voice"], audio_path))
-            
-            # 3. Ghép Video AI với Audio lại thành một video lồng tiếng hoàn chỉnh
-            final_video_path = str(output_dir / f"final_video_{idx}_{timestamp}.mp4")
-            merge_video_audio(raw_video_path, audio_path, final_video_path)
-            
-            time.sleep(2)
-        except Exception as e:
-            print(f"[FATAL] Cảnh {idx} thất bại: {e}")
-            break
+            if render_success:
+                # 2. Sinh giọng đọc lồng tiếng MP3
+                audio_path = str(output_dir / f"voice_scene_{idx + 1}_{timestamp}.mp3")
+                asyncio.run(generate_voiceover(voice, audio_path))
+                
+                # 3. Ghép thành Video hoàn chỉnh
+                final_video_path = str(output_dir / f"final_video_scene_{idx + 1}_{timestamp}.mp4")
+                merge_video_audio(raw_video_path, audio_path, final_video_path)
 
-    print("\n[INFO] Đã hoàn thành render tất cả các phân cảnh thành video thực sự!")
+    print("\n[INFO] Đã hoàn thành render toàn bộ các phân cảnh thành video MP4 sống động!")
 
 if __name__ == "__main__":
     main()
