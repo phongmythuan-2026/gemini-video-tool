@@ -1,8 +1,11 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Công cụ tự động hóa chuẩn SDK `google-genai` mới nhất,
-       sử dụng chính xác model `gemini-3.8-flash`, đọc file Excel kịch bản chi tiết, 
-       xoay vòng Key Pool, Edge-TTS và MoviePy.
+Mô tả: Công cụ tự động hóa hoàn thiện:
+       - Sử dụng model chuẩn mới nhất `gemini-3.8-flash`
+       - Cơ chế xoay vòng đa tài khoản Key Pool chống tràn Quota
+       - Hỗ trợ đọc file Excel kịch bản chi tiết (tự động trích xuất cột lời thoại/nội dung)
+       - Xử lý đa phương thức (Text + Multi-images từ thư mục GitHub)
+       - Tùy chọn khung hình (9:16 / 16:9) tương thích hoàn toàn với MoviePy mới & Edge-TTS
 """
 
 import os
@@ -31,10 +34,11 @@ class GeminiKeyPool:
 
     def rotate_key(self):
         self.current_index = (self.current_index + 1) % len(self.api_keys)
-        print(f"[WARNING] Key hiện tại gặp lỗi. Đang chuyển sang Key thứ {self.current_index + 1}...")
+        print(f"[WARNING] Key hiện tại gặp giới hạn/lỗi. Đang chuyển sang Key thứ {self.current_index + 1}...")
         self._init_client()
 
     def generate_content_with_fallback(self, contents):
+        """Gọi API với cơ chế tự động xoay vòng key khi gặp lỗi rate limit hoặc lỗi hệ thống."""
         total_keys = len(self.api_keys)
         checked_keys = 0
 
@@ -54,6 +58,7 @@ class GeminiKeyPool:
         raise Exception("[CRITICAL] Tất cả các tài khoản Google API trong Pool đều đã gặp lỗi!")
 
 async def generate_voiceover(text: str, output_audio_path: str):
+    """Sử dụng edge-tts để tạo file âm thanh tiếng Việt từ kịch bản."""
     import edge_tts
     voice = "vi-VN-HoaiMyNeural"
     communicate = edge_tts.Communicate(text, voice)
@@ -61,18 +66,24 @@ async def generate_voiceover(text: str, output_audio_path: str):
     print(f"[SUCCESS] Đã tạo file giọng đọc: {output_audio_path}")
 
 def render_video_with_audio(audio_path: str, output_video_path: str, aspect_ratio: str):
+    """Render video hoàn chỉnh với khung hình tùy chọn 9:16 hoặc 16:9 bằng MoviePy (tương thích mọi phiên bản)."""
     print(f"[INFO] Bắt đầu render video với tỷ lệ {aspect_ratio}...")
     try:
         audio_clip = AudioFileClip(audio_path)
         duration = audio_clip.duration
 
         if aspect_ratio == "16:9":
-            width, height = 1280, 720
+            width, height = 1280, 720  # Khung ngang YouTube
         else:
-            width, height = 720, 1280
+            width, height = 720, 1280  # Khung dọc TikTok/Shorts (mặc định 9:16)
 
         background = ColorClip(size=(width, height), color=(20, 24, 33), duration=duration)
-        video = background.set_audio(audio_clip)
+        
+        # Tương thích ngược phương thức gán audio cho các phiên bản MoviePy khác nhau
+        try:
+            video = background.with_audio(audio_clip)
+        except AttributeError:
+            video = background.set_audio(audio_clip)
 
         video.write_videofile(
             output_video_path,
@@ -91,6 +102,7 @@ def render_video_with_audio(audio_path: str, output_video_path: str, aspect_rati
         raise e
 
 def main():
+    # Lấy danh sách key từ biến môi trường GitHub Secrets
     keys_env = os.getenv("GEMINI_KEYS", "")
     api_keys = [k.strip() for k in keys_env.split(",") if k.strip()]
 
@@ -98,14 +110,16 @@ def main():
         print("[ERROR] Không tìm thấy biến môi trường GEMINI_KEYS!")
         return
 
-    # Khởi tạo Pool với model chuẩn mới nhất gemini-3.8-flash
+    # Khởi tạo Pool quản lý key với model chuẩn gemini-3.8-flash
     pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-3.8-flash")
 
+    # Đọc tham số từ giao diện GitHub Actions
     input_filename = os.getenv("INPUT_FILENAME", "").strip()
     input_topic = os.getenv("INPUT_TOPIC", "").strip()
     aspect_ratio = os.getenv("ASPECT_RATIO", "9:16").strip()
     images_folder = os.getenv("IMAGES_FOLDER", "").strip()
 
+    # 1. Tải danh sách hình ảnh đa phương thức (nếu có thư mục ảnh)
     pil_images = []
     if images_folder:
         folder_path = Path("inputs") / images_folder
@@ -121,15 +135,15 @@ def main():
                     except Exception as ex:
                         print(f"[WARNING] Không thể mở file ảnh {img_file.name}: {ex}")
 
-    # Đọc file Excel kịch bản chi tiết thông minh
+    # 2. Đọc danh sách tác vụ từ file Excel kịch bản chi tiết hoặc Text
     tasks = []
     if input_filename:
         file_path = Path("inputs") / input_filename
         if not file_path.exists():
-            file_path = Path(input_filename)
+            file_path = Path(input_filename) # Kiểm tra ở thư mục gốc
 
         if file_path.exists():
-            print(f"[INFO] Đang đọc file kịch bản Excel: {file_path}")
+            print(f"[INFO] Đang đọc file kịch bản: {file_path}")
             if file_path.suffix.lower() == ".xlsx":
                 df = pd.read_excel(file_path)
                 target_col = None
@@ -161,10 +175,13 @@ def main():
 
     for idx, task in enumerate(tasks, 1):
         print(f"\n======================================")
-        print(f"Đang xử lý tác vụ cư dân {idx} (Khung hình: {aspect_ratio})")
+        print(f"Đang xử lý tác vụ {idx} (Khung hình: {aspect_ratio})")
         print(f"======================================")
         try:
+            # Đóng gói dữ liệu đa phương thức chuẩn SDK mới [Prompt, Ảnh 1, Ảnh 2, ...]
             gemini_payload = [task] + pil_images if pil_images else task
+
+            # Sinh kịch bản thông qua Gemini Pool
             script_text = pool.generate_content_with_fallback(gemini_payload)
             
             timestamp = int(time.time())
@@ -172,9 +189,11 @@ def main():
             script_path.write_text(script_text, encoding="utf-8")
             print(f"[SUCCESS] Đã lưu kịch bản vào: {script_path}")
             
+            # Tạo file âm thanh giọng đọc MP3
             audio_path = output_dir / f"voice_{idx}_{timestamp}.mp3"
             asyncio.run(generate_voiceover(script_text, str(audio_path)))
             
+            # Render video hoàn chỉnh theo tỷ lệ khung hình
             video_path = output_dir / f"video_{idx}_{timestamp}.mp4"
             render_video_with_audio(str(audio_path), str(video_path), aspect_ratio)
             
@@ -183,7 +202,7 @@ def main():
             print(f"[FATAL] Tác vụ thất bại: {e}")
             break
 
-    print("\n[INFO] Hoàn thành toàn bộ quy trình tự động hóa thành công!")
+    print("\n[INFO] Hoàn thành toàn bộ quy trình sinh kịch bản, giọng đọc và render video tự động!")
 
 if __name__ == "__main__":
     main()
