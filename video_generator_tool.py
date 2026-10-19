@@ -1,6 +1,8 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Công cụ tự động hóa sử dụng SDK chuẩn mới `google-genai`, hỗ trợ Key Pool, Multi-images và Render Video.
+Mô tả: Công cụ tự động hóa hoàn thiện sử dụng SDK `google-genai` chuẩn mới, 
+       hỗ trợ xoay vòng Key Pool, xử lý đa phương thức (Text + Multi-images), 
+       chọn khung hình (9:16 / 16:9), tạo giọng đọc Edge-TTS và Render Video MoviePy.
 """
 
 import os
@@ -8,54 +10,49 @@ import time
 import asyncio
 from pathlib import Path
 from google import genai
-from google.genai import types
 from PIL import Image
 from moviepy.video.VideoClip import ColorClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 
 class GeminiKeyPool:
-    def __init__(self, api_keys: list[str], model_name: str = "gemini-2.5-flash"):
+    def __init__(self, api_keys: list[str], model_name: str = "gemini-1.5-flash"):
         if not api_keys:
             raise ValueError("Danh sách API Key không được để trống!")
         self.api_keys = api_keys
         self.current_index = 0
-        self.model_name = "gemini-2.5-flash" # Mặc định Flash ổn định cho multimodal
+        self.model_name = model_name
         self._init_client()
 
     def _init_client(self):
         current_key = self.api_keys[self.current_index]
-        # Khởi tạo client theo SDK mới google-genai
+        # Khởi tạo client chính thức theo SDK mới google-genai
         self.client = genai.Client(api_key=current_key)
-        print(f"[INFO] Đang sử dụng Tài khoản / API Key thứ {self.current_index + 1}/{len(self.api_keys)} với SDK google-genai")
+        print(f"[INFO] Đang sử dụng Tài khoản / API Key thứ {self.current_index + 1}/{len(self.api_keys)} với model: {self.model_name}")
 
     def rotate_key(self):
-        """Chuyển sang key tiếp theo khi key hiện tại hết hạn mức."""
+        """Chuyển sang key tiếp theo khi key hiện tại gặp giới hạn hoặc lỗi."""
         self.current_index = (self.current_index + 1) % len(self.api_keys)
-        print(f"[WARNING] Key hiện tại đã chạm giới hạn (Quota). Đang chuyển sang Key thứ {self.current_index + 1}...")
+        print(f"[WARNING] Key hiện tại gặp lỗi/chạm giới hạn. Đang chuyển sang Key thứ {self.current_index + 1}...")
         self._init_client()
 
     def generate_content_with_fallback(self, contents):
-        """Gọi API với cơ chế tự động chuyển key khi gặp lỗi quota hoặc lỗi hệ thống."""
+        """Gọi API với cơ chế xoay vòng key tự động khi gặp lỗi."""
         total_keys = len(self.api_keys)
         checked_keys = 0
 
         while checked_keys < total_keys:
             try:
+                # Cú pháp chuẩn của google-genai SDK
                 response = self.client.models.generate_content(
                     model=self.model_name,
                     contents=contents,
                 )
                 return response.text
             except Exception as e:
-                error_str = str(e).lower()
-                if any(err in error_str for err in ["429", "quota", "resourceexhausted", "exhausted", "limit", "404", "convert"]):
-                    print(f"[WARN] Key {self.current_index + 1} gặp lỗi: {e}")
-                    self.rotate_key()
-                    checked_keys += 1
-                    time.sleep(3)
-                else:
-                    print(f"[ERROR] Lỗi phát sinh không do quota ở Key {self.current_index + 1}: {e}")
-                    raise e
+                print(f"[WARN] Key {self.current_index + 1} gặp lỗi: {e}")
+                self.rotate_key()
+                checked_keys += 1
+                time.sleep(3)
         
         raise Exception("[CRITICAL] Tất cả các tài khoản Google API trong Pool đều đã gặp lỗi!")
 
@@ -74,6 +71,7 @@ def render_video_with_audio(audio_path: str, output_video_path: str, aspect_rati
         audio_clip = AudioFileClip(audio_path)
         duration = audio_clip.duration
 
+        # Thiết lập kích thước khung hình
         if aspect_ratio == "16:9":
             width, height = 1280, 720  # Khung ngang YouTube
         else:
@@ -99,6 +97,7 @@ def render_video_with_audio(audio_path: str, output_video_path: str, aspect_rati
         raise e
 
 def main():
+    # Lấy danh sách key từ biến môi trường GitHub Secrets
     keys_env = os.getenv("GEMINI_KEYS", "")
     api_keys = [k.strip() for k in keys_env.split(",") if k.strip()]
 
@@ -106,14 +105,16 @@ def main():
         print("[ERROR] Không tìm thấy biến môi trường GEMINI_KEYS!")
         return
 
-    pool = GeminiKeyPool(api_keys=api_keys)
+    # Khởi tạo Pool quản lý key (Sử dụng model gemini-1.5-flash ổn định)
+    pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-1.5-flash")
 
+    # Đọc tham số từ giao diện GitHub Actions
     input_filename = os.getenv("INPUT_FILENAME", "").strip()
     input_topic = os.getenv("INPUT_TOPIC", "").strip()
     aspect_ratio = os.getenv("ASPECT_RATIO", "9:16").strip()
     images_folder = os.getenv("IMAGES_FOLDER", "").strip()
 
-    # 1. Tải danh sách hình ảnh PIL đa phương thức
+    # 1. Tải danh sách hình ảnh đa phương thức (nếu có thư mục ảnh)
     pil_images = []
     if images_folder:
         folder_path = Path("inputs") / images_folder
@@ -151,9 +152,10 @@ def main():
         print(f"Đang xử lý tác vụ {idx}: {task} (Khung hình: {aspect_ratio})")
         print(f"======================================")
         try:
-            # SDK mới google-genai cho phép truyền trực tiếp list gồm [text, image1, image2, ...] rất mượt mà
+            # Đóng gói dữ liệu đa phương thức chuẩn SDK mới [Prompt, Ảnh 1, Ảnh 2, ...]
             gemini_payload = [task] + pil_images if pil_images else task
 
+            # Sinh kịch bản qua Gemini Pool
             script_text = pool.generate_content_with_fallback(gemini_payload)
             
             timestamp = int(time.time())
@@ -161,9 +163,11 @@ def main():
             script_path.write_text(script_text, encoding="utf-8")
             print(f"[SUCCESS] Đã lưu kịch bản vào: {script_path}")
             
+            # Tạo file âm thanh giọng đọc MP3
             audio_path = output_dir / f"voice_{idx}_{timestamp}.mp3"
             asyncio.run(generate_voiceover(script_text, str(audio_path)))
             
+            # Render video hoàn chỉnh theo tỷ lệ khung hình
             video_path = output_dir / f"video_{idx}_{timestamp}.mp4"
             render_video_with_audio(str(audio_path), str(video_path), aspect_ratio)
             
@@ -172,7 +176,7 @@ def main():
             print(f"[FATAL] Tác vụ thất bại: {e}")
             break
 
-    print("\n[INFO] Hoàn thành toàn bộ quy trình với SDK mới!")
+    print("\n[INFO] Hoàn thành toàn bộ quy trình sinh kịch bản, giọng đọc và render video!")
 
 if __name__ == "__main__":
     main()
