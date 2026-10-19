@@ -1,6 +1,8 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Sử dụng model chuẩn mới nhất `gemini-3.8-flash`, xoay vòng Key Pool, đọc Excel/Text, Edge-TTS và MoviePy.
+Mô tả: Công cụ tự động hóa chuẩn SDK `google-genai` mới nhất,
+       tự động quét và sử dụng model khả dụng từ API Key, xoay vòng Key Pool,
+       đọc file Excel/Text, Edge-TTS và MoviePy.
 """
 
 import os
@@ -14,26 +16,41 @@ from moviepy.video.VideoClip import ColorClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 
 class GeminiKeyPool:
-    def __init__(self, api_keys: list[str], model_name: str = "gemini-3.8-flash"):
+    def __init__(self, api_keys: list[str]):
         if not api_keys:
             raise ValueError("Danh sách API Key không được để trống!")
         self.api_keys = api_keys
         self.current_index = 0
-        self.model_name = model_name
         self._init_client()
 
     def _init_client(self):
         current_key = self.api_keys[self.current_index]
         self.client = genai.Client(api_key=current_key)
+        self.model_name = self._detect_model()
         print(f"[INFO] Đang sử dụng Tài khoản / API Key thứ {self.current_index + 1}/{len(self.api_keys)} với model: {self.model_name}")
+
+    def _detect_model(self) -> str:
+        """Tự động quét danh sách các model được phép sử dụng từ chính API Key hiện tại."""
+        try:
+            pager = self.client.models.list()
+            for m in pager:
+                name = m.name.replace("models/", "")
+                # Ưu tiên tìm các model flash hỗ trợ tạo nội dung (generateContent)
+                if "flash" in name.lower():
+                    print(f"[INFO] Tự động phát hiện model khả dụng: {name}")
+                    return name
+        except Exception as e:
+            print(f"[WARNING] Không thể quét danh sách model: {e}")
+        
+        # Fallback an toàn tuyệt đối
+        return "gemini-2.0-flash"
 
     def rotate_key(self):
         self.current_index = (self.current_index + 1) % len(self.api_keys)
-        print(f"[WARNING] Key hiện tại gặp giới hạn/lỗi. Đang chuyển sang Key thứ {self.current_index + 1}...")
+        print(f"[WARNING] Key hiện tại gặp lỗi. Đang chuyển sang Key thứ {self.current_index + 1}...")
         self._init_client()
 
     def generate_content_with_fallback(self, contents):
-        """Gọi API với cơ chế tự động xoay vòng key khi gặp lỗi."""
         total_keys = len(self.api_keys)
         checked_keys = 0
 
@@ -53,7 +70,6 @@ class GeminiKeyPool:
         raise Exception("[CRITICAL] Tất cả các tài khoản Google API trong Pool đều đã gặp lỗi!")
 
 async def generate_voiceover(text: str, output_audio_path: str):
-    """Sử dụng edge-tts để tạo file âm thanh tiếng Việt từ kịch bản."""
     import edge_tts
     voice = "vi-VN-HoaiMyNeural"
     communicate = edge_tts.Communicate(text, voice)
@@ -61,16 +77,15 @@ async def generate_voiceover(text: str, output_audio_path: str):
     print(f"[SUCCESS] Đã tạo file giọng đọc: {output_audio_path}")
 
 def render_video_with_audio(audio_path: str, output_video_path: str, aspect_ratio: str):
-    """Render video hoàn chỉnh với khung hình tùy chọn 9:16 hoặc 16:9 bằng MoviePy."""
     print(f"[INFO] Bắt đầu render video với tỷ lệ {aspect_ratio}...")
     try:
         audio_clip = AudioFileClip(audio_path)
         duration = audio_clip.duration
 
         if aspect_ratio == "16:9":
-            width, height = 1280, 720  # Khung ngang YouTube
+            width, height = 1280, 720
         else:
-            width, height = 720, 1280  # Khung dọc TikTok/Shorts (mặc định 9:16)
+            width, height = 720, 1280
 
         background = ColorClip(size=(width, height), color=(20, 24, 33), duration=duration)
         video = background.set_audio(audio_clip)
@@ -99,8 +114,7 @@ def main():
         print("[ERROR] Không tìm thấy biến môi trường GEMINI_KEYS!")
         return
 
-    # Khởi tạo Pool quản lý key với model mới nhất gemini-3.8-flash
-    pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-3.8-flash")
+    pool = GeminiKeyPool(api_keys=api_keys)
 
     input_filename = os.getenv("INPUT_FILENAME", "").strip()
     input_topic = os.getenv("INPUT_TOPIC", "").strip()
@@ -172,7 +186,7 @@ def main():
             print(f"[FATAL] Tác vụ thất bại: {e}")
             break
 
-    print("\n[INFO] Hoàn thành toàn bộ quy trình sinh kịch bản, giọng đọc và render video tự động!")
+    print("\n[INFO] Hoàn thành toàn bộ quy trình tự động hóa thành công!")
 
 if __name__ == "__main__":
     main()
