@@ -1,7 +1,7 @@
 """
 Tên file: video_generator_tool.py
 Mô tả: Công cụ tự động hóa chuẩn SDK `google-genai` mới nhất,
-       cố định sử dụng model chuẩn `gemini-2.0-flash`, đọc file Excel kịch bản chi tiết, 
+       sử dụng chính xác model `gemini-3.8-flash`, đọc file Excel kịch bản chi tiết, 
        xoay vòng Key Pool, Edge-TTS và MoviePy.
 """
 
@@ -16,7 +16,7 @@ from moviepy.video.VideoClip import ColorClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 
 class GeminiKeyPool:
-    def __init__(self, api_keys: list[str], model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_keys: list[str], model_name: str = "gemini-3.8-flash"):
         if not api_keys:
             raise ValueError("Danh sách API Key không được để trống!")
         self.api_keys = api_keys
@@ -47,13 +47,8 @@ class GeminiKeyPool:
                 return response.text
             except Exception as e:
                 print(f"[WARN] Key {self.current_index + 1} gặp lỗi: {e}")
-                # Nếu model 2.0 lỗi 404, thử tự động chuyển sang gemini-1.5-flash ngay lập tức
-                if "404" in str(e) and self.model_name == "gemini-2.0-flash":
-                    print(f"[INFO] Tự động chuyển đổi sang model dự phòng gemini-1.5-flash...")
-                    self.model_name = "gemini-1.5-flash"
-                else:
-                    self.rotate_key()
-                    checked_keys += 1
+                self.rotate_key()
+                checked_keys += 1
                 time.sleep(3)
         
         raise Exception("[CRITICAL] Tất cả các tài khoản Google API trong Pool đều đã gặp lỗi!")
@@ -103,8 +98,8 @@ def main():
         print("[ERROR] Không tìm thấy biến môi trường GEMINI_KEYS!")
         return
 
-    # Khởi tạo Pool với model chuẩn gemini-2.0-flash
-    pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-2.0-flash")
+    # Khởi tạo Pool với model chuẩn mới nhất gemini-3.8-flash
+    pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-3.8-flash")
 
     input_filename = os.getenv("INPUT_FILENAME", "").strip()
     input_topic = os.getenv("INPUT_TOPIC", "").strip()
@@ -166,7 +161,7 @@ def main():
 
     for idx, task in enumerate(tasks, 1):
         print(f"\n======================================")
-        print(f"Đang xử lý tác vụ {idx} (Khung hình: {aspect_ratio})")
+        print(f"Đang xử lý tác vụ cư dân {idx} (Khung hình: {aspect_ratio})")
         print(f"======================================")
         try:
             gemini_payload = [task] + pil_images if pil_images else task
