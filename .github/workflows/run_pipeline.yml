@@ -4,14 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       script_filename:
-        description: 'Tên file kịch bản trong thư mục inputs/ (để trống nếu nhập trực tiếp):'
+        description: 'Tên file kịch bản trong thư mục inputs/:'
         required: false
-        default: 'tasks.txt'
-        type: string
-      direct_topic:
-        description: 'Hoặc nhập trực tiếp chủ đề/yêu cầu mới:'
-        required: false
-        default: ''
+        default: 'kich_ban_nau_an_mien_tay_6ph.xlsx'
         type: string
       aspect_ratio:
         description: 'Chọn khung hình video:'
@@ -21,11 +16,6 @@ on:
         options:
           - '9:16'
           - '16:9'
-      images_folder:
-        description: 'Tên thư mục chứa hình ảnh đa phương thức (trong thư mục inputs/):'
-        required: false
-        default: ''
-        type: string
 
 jobs:
   run-python-script:
@@ -52,11 +42,9 @@ jobs:
 
       - name: Run Video Generation Tool
         env:
-          GEMINI_KEYS: ${{ secrets.GEMINI_KEYS }}
+          FAL_KEY: ${{ secrets.FAL_KEY }}
           INPUT_FILENAME: ${{ github.event.inputs.script_filename }}
-          INPUT_TOPIC: ${{ github.event.inputs.direct_topic }}
           ASPECT_RATIO: ${{ github.event.inputs.aspect_ratio }}
-          IMAGES_FOLDER: ${{ github.event.inputs.images_folder }}
         run: |
           python video_generator_tool.py
 
@@ -67,4 +55,4 @@ jobs:
           
           git add output/
           git status
-          git diff --staged --quiet || (git commit -m "Auto-generate video scripts, multi-images context, and audio assets [skip ci]" && git push)
+          git diff --staged --quiet || (git commit -m "Auto-generate real AI videos and audio assets [skip ci]" && git push)
