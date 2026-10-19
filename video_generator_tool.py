@@ -1,8 +1,8 @@
 """
 Tên file: video_generator_tool.py
-Mô tả: Công cụ tự động hóa hoàn thiện sử dụng SDK `google-genai` chuẩn mới, 
-       hỗ trợ xoay vòng Key Pool, xử lý đa phương thức (Text + Multi-images), 
-       chọn khung hình (9:16 / 16:9), tạo giọng đọc Edge-TTS và Render Video MoviePy.
+Mô tả: Công cụ tự động hóa sử dụng SDK `google-genai` chuẩn mới, 
+       tự động quét model Flash khả dụng, hỗ trợ Key Pool, Multi-images, 
+       chọn khung hình (9:16 / 16:9), Edge-TTS và MoviePy.
 """
 
 import os
@@ -14,23 +14,38 @@ from PIL import Image
 from moviepy.video.VideoClip import ColorClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 
+def get_best_available_model(client) -> str:
+    """Tự động quét danh sách model từ API và chọn model Flash khả dụng."""
+    try:
+        models = client.models.list()
+        for m in models:
+            model_name = m.name.replace("models/", "")
+            if "flash" in model_name.lower():
+                print(f"[INFO] Tự động chọn model khả dụng: {model_name}")
+                return model_name
+    except Exception as e:
+        print(f"[WARNING] Không thể quét danh sách model: {e}")
+    
+    # Fallback chuẩn dự phòng
+    return "gemini-2.5-flash"
+
 class GeminiKeyPool:
-    def __init__(self, api_keys: list[str], model_name: str = "gemini-1.5-flash"):
+    def __init__(self, api_keys: list[str]):
         if not api_keys:
             raise ValueError("Danh sách API Key không được để trống!")
         self.api_keys = api_keys
         self.current_index = 0
-        self.model_name = model_name
         self._init_client()
 
     def _init_client(self):
         current_key = self.api_keys[self.current_index]
-        # Khởi tạo client chính thức theo SDK mới google-genai
         self.client = genai.Client(api_key=current_key)
+        # Tự động tìm model flash mới nhất đang hoạt động trên tài khoản này
+        self.model_name = get_best_available_model(self.client)
         print(f"[INFO] Đang sử dụng Tài khoản / API Key thứ {self.current_index + 1}/{len(self.api_keys)} với model: {self.model_name}")
 
     def rotate_key(self):
-        """Chuyển sang key tiếp theo khi key hiện tại gặp giới hạn hoặc lỗi."""
+        """Chuyển sang key tiếp theo khi key hiện tại gặp lỗi."""
         self.current_index = (self.current_index + 1) % len(self.api_keys)
         print(f"[WARNING] Key hiện tại gặp lỗi/chạm giới hạn. Đang chuyển sang Key thứ {self.current_index + 1}...")
         self._init_client()
@@ -42,7 +57,6 @@ class GeminiKeyPool:
 
         while checked_keys < total_keys:
             try:
-                # Cú pháp chuẩn của google-genai SDK
                 response = self.client.models.generate_content(
                     model=self.model_name,
                     contents=contents,
@@ -71,7 +85,6 @@ def render_video_with_audio(audio_path: str, output_video_path: str, aspect_rati
         audio_clip = AudioFileClip(audio_path)
         duration = audio_clip.duration
 
-        # Thiết lập kích thước khung hình
         if aspect_ratio == "16:9":
             width, height = 1280, 720  # Khung ngang YouTube
         else:
@@ -97,7 +110,6 @@ def render_video_with_audio(audio_path: str, output_video_path: str, aspect_rati
         raise e
 
 def main():
-    # Lấy danh sách key từ biến môi trường GitHub Secrets
     keys_env = os.getenv("GEMINI_KEYS", "")
     api_keys = [k.strip() for k in keys_env.split(",") if k.strip()]
 
@@ -105,16 +117,15 @@ def main():
         print("[ERROR] Không tìm thấy biến môi trường GEMINI_KEYS!")
         return
 
-    # Khởi tạo Pool quản lý key (Sử dụng model gemini-1.5-flash ổn định)
-    pool = GeminiKeyPool(api_keys=api_keys, model_name="gemini-1.5-flash")
+    # Khởi tạo Pool quản lý key với tính năng tự động quét model
+    pool = GeminiKeyPool(api_keys=api_keys)
 
-    # Đọc tham số từ giao diện GitHub Actions
     input_filename = os.getenv("INPUT_FILENAME", "").strip()
     input_topic = os.getenv("INPUT_TOPIC", "").strip()
     aspect_ratio = os.getenv("ASPECT_RATIO", "9:16").strip()
     images_folder = os.getenv("IMAGES_FOLDER", "").strip()
 
-    # 1. Tải danh sách hình ảnh đa phương thức (nếu có thư mục ảnh)
+    # 1. Tải danh sách hình ảnh đa phương thức
     pil_images = []
     if images_folder:
         folder_path = Path("inputs") / images_folder
@@ -150,12 +161,10 @@ def main():
     for idx, task in enumerate(tasks, 1):
         print(f"\n======================================")
         print(f"Đang xử lý tác vụ {idx}: {task} (Khung hình: {aspect_ratio})")
-        print(f"======================================")
+        print(f"====================================== ")
         try:
-            # Đóng gói dữ liệu đa phương thức chuẩn SDK mới [Prompt, Ảnh 1, Ảnh 2, ...]
             gemini_payload = [task] + pil_images if pil_images else task
 
-            # Sinh kịch bản qua Gemini Pool
             script_text = pool.generate_content_with_fallback(gemini_payload)
             
             timestamp = int(time.time())
@@ -163,11 +172,9 @@ def main():
             script_path.write_text(script_text, encoding="utf-8")
             print(f"[SUCCESS] Đã lưu kịch bản vào: {script_path}")
             
-            # Tạo file âm thanh giọng đọc MP3
             audio_path = output_dir / f"voice_{idx}_{timestamp}.mp3"
             asyncio.run(generate_voiceover(script_text, str(audio_path)))
             
-            # Render video hoàn chỉnh theo tỷ lệ khung hình
             video_path = output_dir / f"video_{idx}_{timestamp}.mp4"
             render_video_with_audio(str(audio_path), str(video_path), aspect_ratio)
             
@@ -176,7 +183,7 @@ def main():
             print(f"[FATAL] Tác vụ thất bại: {e}")
             break
 
-    print("\n[INFO] Hoàn thành toàn bộ quy trình sinh kịch bản, giọng đọc và render video!")
+    print("\n[INFO] Hoàn thành toàn bộ quy trình với SDK mới và tự động nhận diện model!")
 
 if __name__ == "__main__":
     main()
